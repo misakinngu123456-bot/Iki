@@ -8,34 +8,41 @@
         body { margin: 0; padding: 20px; font-family: sans-serif; text-align: center; background: #f0f2f5; }
         .box { background: white; padding: 20px; border-radius: 10px; max-width: 650px; margin: 0 auto; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         #canvas { border: 2px solid #333; background: #fff; cursor: crosshair; touch-action: none; margin-top: 10px; }
-        .controls { margin-top: 10px; display: flex; justify-content: center; gap: 10px; }
+        .controls { margin-top: 10px; display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; }
         .hidden { display: none !important; }
-        input[type="text"] { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; width: 70%; }
-        button { padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        input[type="text"], input[type="password"] { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; width: 70%; margin-bottom: 8px; }
+        button { padding: 10px 16px; font-size: 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
         .timer-box { font-size: 22px; font-weight: bold; color: #d32f2f; margin: 5px 0; }
         .progress-box { font-size: 18px; font-weight: bold; color: #1976d2; margin-bottom: 10px; }
         .prompt-box { background: #e3f2fd; padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; margin-bottom: 10px; }
         .result-img { max-width: 100%; border: 1px solid #999; border-radius: 4px; }
         .author-tag { font-size: 14px; color: #666; margin-top: 2px; }
-        .force-btn { background: #ff9800; font-size: 14px; padding: 6px 12px; margin-top: 5px; }
+        .force-btn { background: #ff9800; font-size: 14px; padding: 8px 16px; margin-top: 8px; font-weight: bold; }
+        .tool-btn { background: #6c757d; }
+        .tool-btn.active { background: #28a745; }
+        .host-badge { color: #d32f2f; font-weight: bold; font-size: 14px; }
     </style>
 </head>
 <body>
 
 <div class="box">
     <h2>📱 お絵描き伝言ゲーム</h2>
-    <p>参加人数: <span id="playerCount">0</span> 人</p>
+    <p>参加人数: <span id="playerCount">0</span> 人 <span id="hostStatus" class="host-badge"></span></p>
 
     <div id="statusHeader" class="hidden">
         <div class="timer-box">⏱️ 残り時間: <span id="timeSec">60</span> 秒</div>
         <div class="progress-box">提出状況: <span id="progressText">0 / 0</span> 人完了</div>
-        <button id="forceStartBtn" class="force-btn">⚡ 未提出のまま強制進行</button>
+        
+        <div id="hostControls" class="hidden">
+            <button id="forceStartBtn" class="force-btn">⚡ 【ホスト専用】全員強制送信で次へ進める</button>
+        </div>
     </div>
 
     <div id="nameArea">
-        <h3>プレイヤー名を入力してください</h3>
-        <input type="text" id="nameInput" placeholder="例: たろう">
-        <button id="submitNameBtn">参加する</button>
+        <h3>プレイヤー設定</h3>
+        <input type="text" id="nameInput" placeholder="お名前を入力"><br>
+        <input type="password" id="hostCodeInput" placeholder="ホストコード (ホストの方のみ入力)"><br>
+        <button id="submitNameBtn">ゲームに参加</button>
     </div>
 
     <div id="lobbyArea" class="hidden">
@@ -52,9 +59,16 @@
     <div id="drawArea" class="hidden">
         <div class="prompt-box">お題: <span id="drawPromptText"></span></div>
         <canvas id="canvas" width="500" height="350"></canvas>
+        
         <div class="controls">
             <input type="color" id="colorPicker" value="#000000">
-            <button id="clearBtn">消す</button>
+            <button id="penBtn" class="tool-btn active">✏️ ペン</button>
+            <button id="eraserBtn" class="tool-btn">🧽 消しゴム</button>
+            
+            <label>太さ: <span id="sizeValue">5</span>px</label>
+            <input type="range" id="sizeRange" min="1" max="30" value="5">
+
+            <button id="clearBtn" style="background: #dc3545;">全消去</button>
             <button id="submitDrawBtn" style="background: #28a745;">描けた！</button>
         </div>
     </div>
@@ -88,6 +102,8 @@
     const waitingArea = document.getElementById('waitingArea');
     const resultArea = document.getElementById('resultArea');
     const statusHeader = document.getElementById('statusHeader');
+    const hostControls = document.getElementById('hostControls');
+    const hostStatus = document.getElementById('hostStatus');
 
     const timeSec = document.getElementById('timeSec');
     const progressText = document.getElementById('progressText');
@@ -97,15 +113,32 @@
     let drawing = false, prevX = 0, prevY = 0;
     let currentPhase = '';
 
+    let isEraser = false;
+    let brushSize = 5;
+
     socket.on('update-players', count => document.getElementById('playerCount').textContent = count);
     socket.on('timer-update', sec => timeSec.textContent = sec);
     socket.on('progress-update', data => progressText.textContent = `${data.current} / ${data.total}`);
 
-    // 名前登録
+    // ホスト判定結果を受信
+    socket.on('host-granted', (isHost) => {
+        if (isHost) {
+            hostControls.classList.remove('hidden');
+            hostStatus.textContent = '👑（ホスト）';
+        } else {
+            hostControls.classList.add('hidden');
+            hostStatus.textContent = '';
+        }
+    });
+
+    socket.on('error-msg', msg => alert(msg));
+
+    // ゲーム参加設定
     document.getElementById('submitNameBtn').addEventListener('click', () => {
         const name = document.getElementById('nameInput').value.trim();
+        const hostCode = document.getElementById('hostCodeInput').value.trim();
         if (name) {
-            socket.emit('set-name', name);
+            socket.emit('set-name', { name, hostCode });
             nameArea.classList.add('hidden');
             lobbyArea.classList.remove('hidden');
         }
@@ -113,7 +146,7 @@
 
     document.getElementById('startBtn').addEventListener('click', () => socket.emit('start-game'));
     
-    // 強制進行ボタン
+    // ホスト用 強制進行ボタン
     document.getElementById('forceStartBtn').addEventListener('click', () => {
         socket.emit('force-next-phase');
     });
@@ -146,18 +179,18 @@
         waitingArea.classList.remove('hidden');
     });
 
-    // 強制送信シグナル受信時
+    // 強制送信シグナル受領時
     socket.on('force-submit', () => {
         if (!waitingArea.classList.contains('hidden')) return;
 
         if (currentPhase === 'initial_theme') {
             const val = document.getElementById('initialThemeInput').value.trim();
-            socket.emit('submit-initial-theme', val || '（未入力）');
+            socket.emit('submit-initial-theme', val || '（時間切れ/強制終了）');
         } else if (currentPhase === 'draw') {
             socket.emit('submit-drawing', canvas.toDataURL());
         } else if (currentPhase === 'guess') {
             const val = document.getElementById('guessInput').value.trim();
-            socket.emit('submit-answer', val || '（未入力）');
+            socket.emit('submit-answer', val || '（時間切れ/強制終了）');
         }
     });
 
@@ -179,7 +212,29 @@
         if (val) socket.emit('submit-answer', val);
     });
 
-    // お絵かき処理
+    // 🎨 お絵かき機能
+    const penBtn = document.getElementById('penBtn');
+    const eraserBtn = document.getElementById('eraserBtn');
+    const sizeRange = document.getElementById('sizeRange');
+    const sizeValue = document.getElementById('sizeValue');
+
+    penBtn.addEventListener('click', () => {
+        isEraser = false;
+        penBtn.classList.add('active');
+        eraserBtn.classList.remove('active');
+    });
+
+    eraserBtn.addEventListener('click', () => {
+        isEraser = true;
+        eraserBtn.classList.add('active');
+        penBtn.classList.remove('active');
+    });
+
+    sizeRange.addEventListener('input', (e) => {
+        brushSize = e.target.value;
+        sizeValue.textContent = brushSize;
+    });
+
     canvas.addEventListener('pointerdown', (e) => {
         drawing = true;
         const rect = canvas.getBoundingClientRect();
@@ -192,10 +247,18 @@
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
+
         ctx.beginPath();
-        ctx.strokeStyle = document.getElementById('colorPicker').value;
-        ctx.lineWidth = 3;
+        ctx.lineWidth = brushSize;
         ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        if (isEraser) {
+            ctx.strokeStyle = '#ffffff';
+        } else {
+            ctx.strokeStyle = document.getElementById('colorPicker').value;
+        }
+
         ctx.moveTo(prevX, prevY);
         ctx.lineTo(x, y);
         ctx.stroke();
