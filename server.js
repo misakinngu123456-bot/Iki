@@ -13,46 +13,41 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// ゲームデータ管理
-let playerOrder = []; // プレイヤーの順番 [socketId1, socketId2, ...]
-let chains = {};      // 各プレイヤー発の伝言チェーンデータ
-let currentTurn = 0;  // 現在のターン数
-let totalTurns = 0;   // 総ターン数（人数分）
+let playerOrder = [];
+let chains = {};
+let currentTurn = 0;
+let totalTurns = 0;
 let submittedCount = 0;
 let timer = null;
+let timeLeft = 60;
 
 io.on('connection', (socket) => {
-    console.log('接続:', socket.id);
-
-    // 接続時に現在の状態
     io.emit('update-players', io.engine.clientsCount);
 
-    // ゲーム開始（2人以上）
     socket.on('start-game', () => {
         const clients = Array.from(io.sockets.sockets.keys());
         if (clients.length < 2) return;
 
-        playerOrder = clients.sort(() => Math.random() - 0.5); // 順番をシャッフル
+        playerOrder = clients.sort(() => Math.random() - 0.5);
         currentTurn = 0;
         totalTurns = playerOrder.length;
         submittedCount = 0;
         chains = {};
 
-        // 各プレイヤーのチェーン初期化
-        playerOrder.forEach((id) => {
-            chains[id] = [];
-        });
+        playerOrder.forEach((id) => { chains[id] = []; });
 
-        // 全員にお題入力フェーズを通知
         io.emit('game-phase', { phase: 'initial_theme' });
+        updateProgress();
+        startTimer(60, () => forceSubmit('initial_theme'));
     });
 
-    // 1. 最初のお題入力完了
+    // 1. 最初のお題入力
     socket.on('submit-initial-theme', (text) => {
-        if (!chains[socket.id]) return;
+        if (!chains[socket.id] || hasSubmitted(socket.id)) return;
 
-        chains[socket.id].push({ type: 'text', value: text, author: socket.id });
+        chains[socket.id].push({ type: 'text', value: text || '無題', author: socket.id });
         submittedCount++;
+        updateProgress();
 
         if (submittedCount === playerOrder.length) {
             startNextTurn();
@@ -61,11 +56,14 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 2. お絵かき完了（またはタイムアップ）
+    // 2. お絵かき完了
     socket.on('submit-drawing', (imageData) => {
         const sourceOwnerId = getSourceOwnerForPlayer(socket.id, currentTurn);
+        if (hasSubmitted(socket.id, sourceOwnerId)) return;
+
         chains[sourceOwnerId].push({ type: 'image', value: imageData, author: socket.id });
         submittedCount++;
+        updateProgress();
 
         if (submittedCount === playerOrder.length) {
             startNextTurn();
@@ -77,8 +75,11 @@ io.on('connection', (socket) => {
     // 3. 回答（文章）完了
     socket.on('submit-answer', (text) => {
         const sourceOwnerId = getSourceOwnerForPlayer(socket.id, currentTurn);
-        chains[sourceOwnerId].push({ type: 'text', value: text, author: socket.id });
+        if (hasSubmitted(socket.id, sourceOwnerId)) return;
+
+        chains[sourceOwnerId].push({ type: 'text', value: text || 'パス', author: socket.id });
         submittedCount++;
+        updateProgress();
 
         if (submittedCount === playerOrder.length) {
             startNextTurn();
@@ -87,54 +88,85 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 切断処理
     socket.on('disconnect', () => {
         io.emit('update-players', io.engine.clientsCount);
     });
 });
 
-// 現在のプレイヤーがどの「チェーン（伝言のもと）」を担当するか計算する関数
 function getSourceOwnerForPlayer(playerId, turn) {
     const playerIndex = playerOrder.indexOf(playerId);
     const sourceIndex = (playerIndex - turn + playerOrder.length) % playerOrder.length;
     return playerOrder[sourceIndex];
 }
 
-// ターン進行処理
+function hasSubmitted(playerId, sourceOwnerId = playerId) {
+    return chains[sourceOwnerId].some(item => item.author === playerId);
+}
+
+function updateProgress() {
+    io.emit('progress-update', {
+        current: submittedCount,
+        total: playerOrder.length
+    });
+}
+
+function startTimer(duration, onTimeout) {
+    clearInterval(timer);
+    timeLeft = duration;
+    io.emit('timer-update', timeLeft);
+
+    timer = setInterval(() => {
+        timeLeft--;
+        io.emit('timer-update', timeLeft);
+        if (timeLeft <= 0) {
+            clearInterval(timer);
+            onTimeout();
+        }
+    }, 1000);
+}
+
+// タイムアップ時の強制提出処理
+function forceSubmit(currentPhase) {
+    playerOrder.forEach((id) => {
+        const socket = io.sockets.sockets.get(id);
+        if (socket) {
+            socket.emit('force-submit');
+        }
+    });
+}
+
 function startNextTurn() {
     clearInterval(timer);
     submittedCount = 0;
     currentTurn++;
 
-    // 全ターン終了したら結果発表へ
     if (currentTurn >= totalTurns) {
         io.emit('game-phase', { phase: 'result', chains: chains, order: playerOrder });
         return;
     }
 
-    // ターンタイプ判定（偶数ターンは絵を描く、奇数ターンは文章で当てる）
     const isDrawingTurn = currentTurn % 2 === 1;
+    updateProgress();
 
     playerOrder.forEach((id) => {
         const sourceOwnerId = getSourceOwnerForPlayer(id, currentTurn);
         const lastEntry = chains[sourceOwnerId][chains[sourceOwnerId].length - 1];
 
         if (isDrawingTurn) {
-            // 前の人の「文章」を見て「絵」を描く
             io.to(id).emit('game-phase', {
                 phase: 'draw',
-                promptText: lastEntry.value,
-                timeLimit: 30
+                promptText: lastEntry.value
             });
         } else {
-            // 前の人の「絵」を見て「文章」を当てる
             io.to(id).emit('game-phase', {
                 phase: 'guess',
-                promptImage: lastEntry.value,
-                timeLimit: 20
+                promptImage: lastEntry.value
             });
         }
     });
+
+    // 1分（60秒）タイマーを再始動
+    startTimer(60, () => forceSubmit(isDrawingTurn ? 'draw' : 'guess'));
 }
 
 const PORT = process.env.PORT || 3000;
