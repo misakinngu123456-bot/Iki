@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>お絵描き伝言ゲーム</title>
+    <style>
+        body { margin: 0; padding: 20px; font-family: sans-serif; text-align: center; background: #f0f2f5; }
+        .box { background: white; padding: 20px; border-radius: 10px; max-width: 650px; margin: 0 auto; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        #canvas { border: 2px solid #333; background: #fff; cursor: crosshair; touch-action: none; margin-top: 10px; }
+        .controls { margin-top: 10px; display: flex; justify-content: center; gap: 10px; }
+        .hidden { display: none !important; }
+        input[type="text"] { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; width: 70%; }
+        button { padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .prompt-box { background: #e3f2fd; padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; margin-bottom: 10px; }
+        .result-item { border-bottom: 2px dashed #ccc; padding: 15px 0; }
+        .result-img { max-width: 100%; border: 1px solid #999; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <h2>📱 お絵描き伝言ゲーム</h2>
+    <p>参加人数: <span id="playerCount">1</span> 人</p>
+
+    <div id="lobbyArea">
+        <p>2人以上集まったら「スタート」を押してください！</p>
+        <button id="startBtn">ゲームを始める</button>
+    </div>
+
+    <div id="initialThemeArea" class="hidden">
+        <h3>1. 最初のお題を決めて入力してください！</h3>
+        <input type="text" id="initialThemeInput" placeholder="例: 宇宙服を着たペンギン">
+        <button id="submitInitialThemeBtn">決定</button>
+    </div>
+
+    <div id="drawArea" class="hidden">
+        <div class="prompt-box">お題: <span id="drawPromptText"></span></div>
+        <canvas id="canvas" width="500" height="350"></canvas>
+        <div class="controls">
+            <input type="color" id="colorPicker" value="#000000">
+            <button id="clearBtn">消す</button>
+            <button id="submitDrawBtn" style="background: #28a745;">描けた！</button>
+        </div>
+    </div>
+
+    <div id="guessArea" class="hidden">
+        <h3>この絵は何を表しているでしょう？</h3>
+        <img id="promptImage" src="" class="result-img" style="max-height: 250px;"><br><br>
+        <input type="text" id="guessInput" placeholder="推測した文章を入力...">
+        <button id="submitGuessBtn">送信</button>
+    </div>
+
+    <div id="waitingArea" class="hidden">
+        <h3>全員が完了するのを待っています... ⏳</h3>
+    </div>
+
+    <div id="resultArea" class="hidden">
+        <h2>🎉 伝言の結果発表！</h2>
+        <div id="resultContent"></div>
+    </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+    const socket = io();
+
+    // UI要素
+    const lobbyArea = document.getElementById('lobbyArea');
+    const initialThemeArea = document.getElementById('initialThemeArea');
+    const drawArea = document.getElementById('drawArea');
+    const guessArea = document.getElementById('guessArea');
+    const waitingArea = document.getElementById('waitingArea');
+    const resultArea = document.getElementById('resultArea');
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let drawing = false, prevX = 0, prevY = 0;
+
+    socket.on('update-players', (count) => {
+        document.getElementById('playerCount').textContent = count;
+    });
+
+    document.getElementById('startBtn').addEventListener('click', () => socket.emit('start-game'));
+
+    // フェーズ切り替え
+    socket.on('game-phase', (data) => {
+        hideAll();
+
+        if (data.phase === 'initial_theme') {
+            initialThemeArea.classList.remove('hidden');
+        } else if (data.phase === 'draw') {
+            drawArea.classList.remove('hidden');
+            document.getElementById('drawPromptText').textContent = data.promptText;
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // キャンバスクリア
+        } else if (data.phase === 'guess') {
+            guessArea.classList.remove('hidden');
+            document.getElementById('promptImage').src = data.promptImage;
+            document.getElementById('guessInput').value = '';
+        } else if (data.phase === 'result') {
+            resultArea.classList.remove('hidden');
+            renderResults(data.chains, data.order);
+        }
+    });
+
+    socket.on('waiting', () => {
+        hideAll();
+        waitingArea.classList.remove('hidden');
+    });
+
+    function hideAll() {
+        [lobbyArea, initialThemeArea, drawArea, guessArea, waitingArea, resultArea].forEach(el => el.classList.add('hidden'));
+    }
+
+    // イベント送信
+    document.getElementById('submitInitialThemeBtn').addEventListener('click', () => {
+        const val = document.getElementById('initialThemeInput').value.trim();
+        if (val) socket.emit('submit-initial-theme', val);
+    });
+
+    document.getElementById('submitDrawBtn').addEventListener('click', () => {
+        const imageData = canvas.toDataURL(); // 絵を画像データ（文字列）に変換
+        socket.emit('submit-drawing', imageData);
+    });
+
+    document.getElementById('submitGuessBtn').addEventListener('click', () => {
+        const val = document.getElementById('guessInput').value.trim();
+        if (val) socket.emit('submit-answer', val);
+    });
+
+    // お絵かき機能
+    canvas.addEventListener('pointerdown', (e) => {
+        drawing = true;
+        const rect = canvas.getBoundingClientRect();
+        prevX = e.clientX - rect.left;
+        prevY = e.clientY - rect.top;
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        if (!drawing) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        ctx.beginPath();
+        ctx.strokeStyle = document.getElementById('colorPicker').value;
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        ctx.moveTo(prevX, prevY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        prevX = x; prevY = y;
+    });
+
+    window.addEventListener('pointerup', () => drawing = false);
+    document.getElementById('clearBtn').addEventListener('click', () => ctx.clearRect(0, 0, canvas.width, canvas.height));
+
+    // 結果発表のレンダリング
+    function renderResults(chains, order) {
+        const container = document.getElementById('resultContent');
+        container.innerHTML = '';
+
+        order.forEach((ownerId, index) => {
+            const chain = chains[ownerId];
+            let html = `<div style="background:#f9f9f9; padding:15px; margin-bottom:20px; border-radius:8px;">`;
+            html += `<h3>📜 伝言 ${index + 1} の歴史</h3>`;
+
+            chain.forEach(item => {
+                if (item.type === 'text') {
+                    html += `<p style="font-size:18px; font-weight:bold;">💬 「 ${item.value} 」</p>`;
+                } else if (item.type === 'image') {
+                    html += `<div><img src="${item.value}" class="result-img"></div>`;
+                }
+            });
+
+            html += `</div>`;
+            container.innerHTML += html;
+        });
+    }
+</script>
+</body>
+</html>
