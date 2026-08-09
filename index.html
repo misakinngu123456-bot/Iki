@@ -46,8 +46,13 @@
     </div>
 
     <div id="lobbyArea" class="hidden">
-        <p>2人以上集まったら「スタート」を押してください！</p>
-        <button id="startBtn">ゲームを始める</button>
+        <div id="hostLobbyArea" class="hidden">
+            <p>2人以上集まったらゲームを開始してください！</p>
+            <button id="startBtn" style="font-weight: bold; font-size: 18px; padding: 12px 24px;">🎮 ゲームを始める（ホスト権限）</button>
+        </div>
+        <div id="guestLobbyArea">
+            <p>⏳ ホストがゲームを開始するのを待っています...</p>
+        </div>
     </div>
 
     <div id="initialThemeArea" class="hidden">
@@ -96,6 +101,9 @@
 
     const nameArea = document.getElementById('nameArea');
     const lobbyArea = document.getElementById('lobbyArea');
+    const hostLobbyArea = document.getElementById('hostLobbyArea');
+    const guestLobbyArea = document.getElementById('guestLobbyArea');
+    
     const initialThemeArea = document.getElementById('initialThemeArea');
     const drawArea = document.getElementById('drawArea');
     const guessArea = document.getElementById('guessArea');
@@ -120,13 +128,17 @@
     socket.on('timer-update', sec => timeSec.textContent = sec);
     socket.on('progress-update', data => progressText.textContent = `${data.current} / ${data.total}`);
 
-    // ホスト判定結果を受信
+    // 🔑 ホスト判定結果を受信してUI切り替え
     socket.on('host-granted', (isHost) => {
         if (isHost) {
             hostControls.classList.remove('hidden');
+            hostLobbyArea.classList.remove('hidden');
+            guestLobbyArea.classList.add('hidden');
             hostStatus.textContent = '👑（ホスト）';
         } else {
             hostControls.classList.add('hidden');
+            hostLobbyArea.classList.add('hidden');
+            guestLobbyArea.classList.remove('hidden');
             hostStatus.textContent = '';
         }
     });
