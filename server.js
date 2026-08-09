@@ -32,10 +32,9 @@ io.on('connection', (socket) => {
         if (players[socket.id]) {
             players[socket.id].name = data.name.trim() || '名無し';
             
-            // 入力されたコードが一致する場合のみホスト権限を与える
             if (data.hostCode === HOST_CODE) {
                 players[socket.id].isHost = true;
-                socket.emit('host-granted', true); // ホスト権限通知
+                socket.emit('host-granted', true);
             } else {
                 players[socket.id].isHost = false;
                 socket.emit('host-granted', false);
@@ -46,10 +45,19 @@ io.on('connection', (socket) => {
 
     io.emit('update-players', Object.keys(players).length);
 
-    // ゲーム開始処理
+    // 🔒 ホスト限定のゲーム開始処理
     socket.on('start-game', () => {
+        // ホスト権限を持っているか判定
+        if (!players[socket.id] || !players[socket.id].isHost) {
+            socket.emit('error-msg', '⚠️ ゲームを開始できるのはホストのみです！');
+            return;
+        }
+
         const clients = Object.keys(players);
-        if (clients.length < 2) return;
+        if (clients.length < 2) {
+            socket.emit('error-msg', '⚠️ ゲームを開始するには2人以上必要です！');
+            return;
+        }
 
         playerOrder = clients.sort(() => Math.random() - 0.5);
         currentTurn = 0;
@@ -64,7 +72,7 @@ io.on('connection', (socket) => {
         startTimer(60, () => forceSubmitAll());
     });
 
-    // 🔒 厳格なホスト判定：ホスト権限を持つユーザーだけが強制進行可能
+    // ホスト限定の強制進行
     socket.on('force-next-phase', () => {
         if (players[socket.id] && players[socket.id].isHost) {
             forceSubmitAll();
