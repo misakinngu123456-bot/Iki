@@ -13,9 +13,9 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-const HOST_CODE = '12345678'; // 設定したホストコード
+const HOST_CODE = '12345678';
 
-let players = {}; // { socketId: { name: '名前', isHost: false } }
+let players = {}; 
 let playerOrder = [];
 let chains = {};
 let currentTurn = 0;
@@ -23,11 +23,11 @@ let totalTurns = 0;
 let submittedCount = 0;
 let timer = null;
 let timeLeft = 60;
+let isForcingNext = false;
 
 io.on('connection', (socket) => {
     players[socket.id] = { name: '名無し', isHost: false };
 
-    // ユーザー名登録 & ホスト判定
     socket.on('set-name', (data) => {
         if (players[socket.id]) {
             players[socket.id].name = data.name.trim() || '名無し';
@@ -45,9 +45,8 @@ io.on('connection', (socket) => {
 
     io.emit('update-players', Object.keys(players).length);
 
-    // 🔒 ホスト限定のゲーム開始処理
+    // ゲーム開始処理
     socket.on('start-game', () => {
-        // ホスト権限を持っているか判定
         if (!players[socket.id] || !players[socket.id].isHost) {
             socket.emit('error-msg', '⚠️ ゲームを開始できるのはホストのみです！');
             return;
@@ -72,7 +71,7 @@ io.on('connection', (socket) => {
         startTimer(60, () => forceSubmitAll());
     });
 
-    // ホスト限定の強制進行
+    // 強制進行（ホストのみ）
     socket.on('force-next-phase', () => {
         if (players[socket.id] && players[socket.id].isHost) {
             forceSubmitAll();
@@ -86,7 +85,7 @@ io.on('connection', (socket) => {
         if (!chains[socket.id] || hasSubmitted(socket.id)) return;
 
         const userName = players[socket.id]?.name || '名無し';
-        chains[socket.id].push({ type: 'text', value: text || '無題', author: socket.id, authorName: userName });
+        chains[socket.id].push({ type: 'text', value: text || '（未入力）', author: socket.id, authorName: userName });
         submittedCount++;
         updateProgress();
 
@@ -100,7 +99,7 @@ io.on('connection', (socket) => {
     // 2. お絵かき完了
     socket.on('submit-drawing', (imageData) => {
         const sourceOwnerId = getSourceOwnerForPlayer(socket.id, currentTurn);
-        if (hasSubmitted(socket.id, sourceOwnerId)) return;
+        if (!sourceOwnerId || hasSubmitted(socket.id, sourceOwnerId)) return;
 
         const userName = players[socket.id]?.name || '名無し';
         chains[sourceOwnerId].push({ type: 'image', value: imageData, author: socket.id, authorName: userName });
@@ -117,10 +116,10 @@ io.on('connection', (socket) => {
     // 3. 回答完了
     socket.on('submit-answer', (text) => {
         const sourceOwnerId = getSourceOwnerForPlayer(socket.id, currentTurn);
-        if (hasSubmitted(socket.id, sourceOwnerId)) return;
+        if (!sourceOwnerId || hasSubmitted(socket.id, sourceOwnerId)) return;
 
         const userName = players[socket.id]?.name || '名無し';
-        chains[sourceOwnerId].push({ type: 'text', value: text || 'パス', author: socket.id, authorName: userName });
+        chains[sourceOwnerId].push({ type: 'text', value: text || '（未入力）', author: socket.id, authorName: userName });
         submittedCount++;
         updateProgress();
 
@@ -139,6 +138,7 @@ io.on('connection', (socket) => {
 
 function getSourceOwnerForPlayer(playerId, turn) {
     const playerIndex = playerOrder.indexOf(playerId);
+    if (playerIndex === -1) return null;
     const sourceIndex = (playerIndex - turn + playerOrder.length) % playerOrder.length;
     return playerOrder[sourceIndex];
 }
@@ -169,12 +169,40 @@ function startTimer(duration, onTimeout) {
     }, 1000);
 }
 
+// 全員強制進行（タイムアウト / ホスト実行時）
 function forceSubmitAll() {
+    if (isForcingNext) return;
+    isForcingNext = true;
+    clearInterval(timer);
+
+    // クライアントへ送信要求
     io.emit('force-submit');
+
+    // 通信ラグや未応答のプレイヤーへのサーバー補填処理（1.5秒後）
+    setTimeout(() => {
+        playerOrder.forEach((id) => {
+            const sourceOwnerId = (currentTurn === 0) ? id : getSourceOwnerForPlayer(id, currentTurn);
+            if (sourceOwnerId && !hasSubmitted(id, sourceOwnerId)) {
+                const userName = players[id]?.name || '名無し';
+                if (currentTurn === 0) {
+                    chains[id].push({ type: 'text', value: '（時間切れ）', author: id, authorName: userName });
+                } else if (currentTurn % 2 === 1) {
+                    // 白紙画像データのデフォルト補填
+                    const dummyCanvas = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+                    chains[sourceOwnerId].push({ type: 'image', value: dummyCanvas, author: id, authorName: userName });
+                } else {
+                    chains[sourceOwnerId].push({ type: 'text', value: '（時間切れ）', author: id, authorName: userName });
+                }
+                submittedCount++;
+            }
+        });
+        startNextTurn();
+    }, 1500);
 }
 
 function startNextTurn() {
     clearInterval(timer);
+    isForcingNext = false;
     submittedCount = 0;
     currentTurn++;
 
@@ -193,12 +221,12 @@ function startNextTurn() {
         if (isDrawingTurn) {
             io.to(id).emit('game-phase', {
                 phase: 'draw',
-                promptText: lastEntry.value
+                promptText: lastEntry ? lastEntry.value : 'お題なし'
             });
         } else {
             io.to(id).emit('game-phase', {
                 phase: 'guess',
-                promptImage: lastEntry.value
+                promptImage: lastEntry ? lastEntry.value : ''
             });
         }
     });
