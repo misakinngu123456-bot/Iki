@@ -13,6 +13,9 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+const HOST_CODE = '12345678'; // 設定したホストコード
+
+let players = {}; // { socketId: { name: '名前', isHost: false } }
 let playerOrder = [];
 let chains = {};
 let currentTurn = 0;
@@ -22,10 +25,30 @@ let timer = null;
 let timeLeft = 60;
 
 io.on('connection', (socket) => {
-    io.emit('update-players', io.engine.clientsCount);
+    players[socket.id] = { name: '名無し', isHost: false };
 
+    // ユーザー名登録 & ホスト判定
+    socket.on('set-name', (data) => {
+        if (players[socket.id]) {
+            players[socket.id].name = data.name.trim() || '名無し';
+            
+            // 入力されたコードが一致する場合のみホスト権限を与える
+            if (data.hostCode === HOST_CODE) {
+                players[socket.id].isHost = true;
+                socket.emit('host-granted', true); // ホスト権限通知
+            } else {
+                players[socket.id].isHost = false;
+                socket.emit('host-granted', false);
+            }
+        }
+        io.emit('update-players', Object.keys(players).length);
+    });
+
+    io.emit('update-players', Object.keys(players).length);
+
+    // ゲーム開始処理
     socket.on('start-game', () => {
-        const clients = Array.from(io.sockets.sockets.keys());
+        const clients = Object.keys(players);
         if (clients.length < 2) return;
 
         playerOrder = clients.sort(() => Math.random() - 0.5);
@@ -38,14 +61,24 @@ io.on('connection', (socket) => {
 
         io.emit('game-phase', { phase: 'initial_theme' });
         updateProgress();
-        startTimer(60, () => forceSubmit('initial_theme'));
+        startTimer(60, () => forceSubmitAll());
+    });
+
+    // 🔒 厳格なホスト判定：ホスト権限を持つユーザーだけが強制進行可能
+    socket.on('force-next-phase', () => {
+        if (players[socket.id] && players[socket.id].isHost) {
+            forceSubmitAll();
+        } else {
+            socket.emit('error-msg', '⚠️ 強制進行できるのはホストのみです！');
+        }
     });
 
     // 1. 最初のお題入力
     socket.on('submit-initial-theme', (text) => {
         if (!chains[socket.id] || hasSubmitted(socket.id)) return;
 
-        chains[socket.id].push({ type: 'text', value: text || '無題', author: socket.id });
+        const userName = players[socket.id]?.name || '名無し';
+        chains[socket.id].push({ type: 'text', value: text || '無題', author: socket.id, authorName: userName });
         submittedCount++;
         updateProgress();
 
@@ -61,7 +94,8 @@ io.on('connection', (socket) => {
         const sourceOwnerId = getSourceOwnerForPlayer(socket.id, currentTurn);
         if (hasSubmitted(socket.id, sourceOwnerId)) return;
 
-        chains[sourceOwnerId].push({ type: 'image', value: imageData, author: socket.id });
+        const userName = players[socket.id]?.name || '名無し';
+        chains[sourceOwnerId].push({ type: 'image', value: imageData, author: socket.id, authorName: userName });
         submittedCount++;
         updateProgress();
 
@@ -72,12 +106,13 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 3. 回答（文章）完了
+    // 3. 回答完了
     socket.on('submit-answer', (text) => {
         const sourceOwnerId = getSourceOwnerForPlayer(socket.id, currentTurn);
         if (hasSubmitted(socket.id, sourceOwnerId)) return;
 
-        chains[sourceOwnerId].push({ type: 'text', value: text || 'パス', author: socket.id });
+        const userName = players[socket.id]?.name || '名無し';
+        chains[sourceOwnerId].push({ type: 'text', value: text || 'パス', author: socket.id, authorName: userName });
         submittedCount++;
         updateProgress();
 
@@ -89,7 +124,8 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        io.emit('update-players', io.engine.clientsCount);
+        delete players[socket.id];
+        io.emit('update-players', Object.keys(players).length);
     });
 });
 
@@ -100,7 +136,7 @@ function getSourceOwnerForPlayer(playerId, turn) {
 }
 
 function hasSubmitted(playerId, sourceOwnerId = playerId) {
-    return chains[sourceOwnerId].some(item => item.author === playerId);
+    return chains[sourceOwnerId]?.some(item => item.author === playerId);
 }
 
 function updateProgress() {
@@ -125,14 +161,8 @@ function startTimer(duration, onTimeout) {
     }, 1000);
 }
 
-// タイムアップ時の強制提出処理
-function forceSubmit(currentPhase) {
-    playerOrder.forEach((id) => {
-        const socket = io.sockets.sockets.get(id);
-        if (socket) {
-            socket.emit('force-submit');
-        }
-    });
+function forceSubmitAll() {
+    io.emit('force-submit');
 }
 
 function startNextTurn() {
@@ -165,8 +195,7 @@ function startNextTurn() {
         }
     });
 
-    // 1分（60秒）タイマーを再始動
-    startTimer(60, () => forceSubmit(isDrawingTurn ? 'draw' : 'guess'));
+    startTimer(60, () => forceSubmitAll());
 }
 
 const PORT = process.env.PORT || 3000;
