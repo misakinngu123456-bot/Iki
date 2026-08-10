@@ -14,9 +14,9 @@ app.get('/', (req, res) => {
 });
 
 const HOST_CODE = '12345678';
-const TIME_LIMIT = 120; // ⏱️ 制限時間を2分（120秒）に設定
+const TIME_LIMIT = 120; // ⏱️ 2分（120秒）に設定
 
-// プレイヤー管理: { "ユーザー名": { originalSocketId, name, isHost, currentSocketId, isOnline } }
+// プレイヤー管理
 let playersByName = {};
 let playerOrder = [];
 let chains = {};
@@ -30,7 +30,7 @@ let gameStarted = false;
 
 io.on('connection', (socket) => {
 
-    // ユーザー名登録 & 復帰判定
+    // 名前登録＆復帰判定
     socket.on('set-name', (data) => {
         const userName = data.name.trim() || '名無し';
         const isHostAttempt = (data.hostCode === HOST_CODE);
@@ -66,7 +66,7 @@ io.on('connection', (socket) => {
         io.emit('update-players', Object.keys(playersByName).length);
     });
 
-    // 🎮 ゲーム開始処理（ホストのみ）
+    // ゲーム開始処理（ホストのみ）
     socket.on('start-game', () => {
         const player = getPlayerBySocketId(socket.id);
         if (!player || !player.isHost) {
@@ -91,10 +91,10 @@ io.on('connection', (socket) => {
 
         io.emit('game-phase', { phase: 'initial_theme' });
         updateProgress();
-        startTimer(TIME_LIMIT, () => forceSubmitAll()); // 2分（120秒）でタイマースタート
+        startTimer(TIME_LIMIT, () => forceSubmitAll());
     });
 
-    // ⚡ 強制進行（ホストのみ）
+    // 強制進行（ホストのみ）
     socket.on('force-next-phase', () => {
         const player = getPlayerBySocketId(socket.id);
         if (player && player.isHost) {
@@ -295,7 +295,7 @@ function startNextTurn() {
         }
     });
 
-    startTimer(TIME_LIMIT, () => forceSubmitAll()); // 次のターンも2分（120秒）でタイマースタート
+    startTimer(TIME_LIMIT, () => forceSubmitAll());
 }
 
 const PORT = process.env.PORT || 3000;
