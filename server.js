@@ -14,16 +14,17 @@ app.get('/', (req, res) => {
 });
 
 const HOST_CODE = '12345678';
+const TIME_LIMIT = 120; // ⏱️ 制限時間を2分（120秒）に設定
 
 // プレイヤー管理: { "ユーザー名": { originalSocketId, name, isHost, currentSocketId, isOnline } }
 let playersByName = {};
-let playerOrder = []; // プレイヤー名（または識別ID）の配列
+let playerOrder = [];
 let chains = {};
 let currentTurn = 0;
 let totalTurns = 0;
 let submittedCount = 0;
 let timer = null;
-let timeLeft = 60;
+let timeLeft = TIME_LIMIT;
 let isForcingNext = false;
 let gameStarted = false;
 
@@ -34,9 +35,7 @@ io.on('connection', (socket) => {
         const userName = data.name.trim() || '名無し';
         const isHostAttempt = (data.hostCode === HOST_CODE);
 
-        // 🔄 再接続（同じ名前での入り直し）の判定
         if (playersByName[userName]) {
-            // Socket IDの更新
             playersByName[userName].currentSocketId = socket.id;
             playersByName[userName].isOnline = true;
             if (isHostAttempt) playersByName[userName].isHost = true;
@@ -44,14 +43,12 @@ io.on('connection', (socket) => {
             socket.emit('host-granted', playersByName[userName].isHost);
             socket.emit('info-msg', `おかえりなさい！ ${userName} さんとして復帰しました。`);
 
-            // ゲーム進行中の場合、現在のフェーズに復帰させる
             if (gameStarted) {
                 reconnectPlayerToGame(socket, userName);
             } else {
                 socket.emit('waiting-lobby');
             }
         } else {
-            // ✨ 新規参加
             playersByName[userName] = {
                 originalSocketId: socket.id,
                 currentSocketId: socket.id,
@@ -94,7 +91,7 @@ io.on('connection', (socket) => {
 
         io.emit('game-phase', { phase: 'initial_theme' });
         updateProgress();
-        startTimer(60, () => forceSubmitAll());
+        startTimer(TIME_LIMIT, () => forceSubmitAll()); // 2分（120秒）でタイマースタート
     });
 
     // ⚡ 強制進行（ホストのみ）
@@ -182,7 +179,6 @@ function checkTurnCompletion() {
     }
 }
 
-// 🔄 再接続時のゲーム状況復元
 function reconnectPlayerToGame(socket, userName) {
     if (currentTurn >= totalTurns) {
         socket.emit('game-phase', { phase: 'result', chains: chains, order: playerOrder });
@@ -191,7 +187,6 @@ function reconnectPlayerToGame(socket, userName) {
 
     const sourceOwnerName = (currentTurn === 0) ? userName : getSourceOwnerForPlayer(userName, currentTurn);
     
-    // すでに提出済みなら待機画面へ
     if (hasSubmitted(userName, sourceOwnerName)) {
         socket.emit('waiting');
         return;
@@ -300,7 +295,7 @@ function startNextTurn() {
         }
     });
 
-    startTimer(60, () => forceSubmitAll());
+    startTimer(TIME_LIMIT, () => forceSubmitAll()); // 次のターンも2分（120秒）でタイマースタート
 }
 
 const PORT = process.env.PORT || 3000;
